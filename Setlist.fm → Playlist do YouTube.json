@@ -1,0 +1,339 @@
+{
+  "name": "Setlist.fm → Playlist do YouTube",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "setlist-playlist",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "2f99dc53-2d38-4bf6-a11b-e06c89e53b95",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        16
+      ],
+      "webhookId": "b7e2f0a4-6c1d-4a5e-9f31-2d7c9b8e1a10"
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.setlist.fm/rest/1.0/setlist/' + $json.body.setlistId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4a24d842-fcb4-432d-8a36-87b2d1eda0be",
+      "name": "Buscar setlist",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3040,
+        16
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "llvX6CGRxmOY7Z4L",
+          "name": "Setlistfm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Achata os sets do setlist.fm em uma lista de faixas.\n// A API devolve XML por padrao (no XML o wrapper se chama 'sets', no JSON e 'set'),\n// e o n8n pode entregar isso ja convertido em objeto. O parse abaixo aceita os dois.\nconst raw = $input.all()[0]?.json ?? {};\n\nfunction achatar(valor) {\n  if (typeof valor === 'string') {\n    try {\n      return achatar(JSON.parse(valor));\n    } catch {\n      return null;\n    }\n  }\n  if (Array.isArray(valor)) {\n    for (const item of valor) {\n      const achado = achatar(item);\n      if (achado) return achado;\n    }\n    return null;\n  }\n  if (valor && typeof valor === 'object') {\n    if (Array.isArray(valor.setlist)) return valor.setlist[0] ?? null;\n    if (valor.artist || valor.set || valor.sets || valor.song) return valor;\n    for (const chave of ['body', 'data', 'response']) {\n      const achado = achatar(valor[chave]);\n      if (achado) return achado;\n    }\n  }\n  return null;\n}\n\n// No XML a hierarquia vem aninhada: sets -> set -> song.\nfunction conjuntosDo(valor) {\n  if (Array.isArray(valor)) return valor.flatMap(conjuntosDo);\n  if (!valor || typeof valor !== 'object') return [];\n  if (valor.set !== undefined) return conjuntosDo(valor.set);\n  if (valor.sets !== undefined) return conjuntosDo(valor.sets);\n  if (valor.song !== undefined || valor.songs !== undefined) return [valor];\n  return [];\n}\n\nfunction musicasDo(conjunto) {\n  if (Array.isArray(conjunto)) return conjunto.flatMap(musicasDo);\n  if (!conjunto || typeof conjunto !== 'object') return [];\n  if (conjunto.song !== undefined) return musicasDo(conjunto.song);\n  if (conjunto.songs !== undefined) return musicasDo(conjunto.songs);\n  return [conjunto];\n}\n\nconst sl = achatar(raw) ?? {};\nconst city = sl.venue?.city ?? {};\nconst venue = [sl.venue?.name, city.name, city.country?.name].filter(Boolean).join(', ');\nconst rawDate = sl.eventDate || '';\n// eventDate vem como dd-MM-yyyy.\nconst date = /^\\d{2}-\\d{2}-\\d{4}$/.test(rawDate) ? rawDate.split('-').join('/') : rawDate;\n\nconst songs = [];\nfor (const conjunto of conjuntosDo(sl.set ?? sl.sets ?? sl)) {\n  for (const item of musicasDo(conjunto)) {\n    const nome = item.name ?? item.song?.name ?? item.title;\n    if (!nome) continue;\n    // Quem tocou: o convidado ('with') tem precedencia sobre o artista do show.\n    const performer = item.with?.name || sl.artist?.name || '';\n    const cover = typeof item.cover === 'object' ? item.cover?.name || '' : item.coverArtist?.name || '';\n    songs.push({\n      song: nome,\n      artist: performer,\n      cover,\n      query: `${performer} ${nome}`.trim(),\n    });\n  }\n}\n\nreturn [{\n  json: {\n    artist: sl.artist?.name ?? '',\n    venue,\n    date,\n    tour: sl.tour?.name ?? '',\n    url: sl.url ?? '',\n    songs,\n    // Se nao achou musica, mostra as chaves que vieram para diagnosticar o formato.\n    ...(songs.length ? {} : { debug: { chavesDaResposta: Object.keys(raw), chavesDoSetlist: Object.keys(sl) } }),\n  },\n}];"
+      },
+      "id": "4ddeb00b-db91-43ce-978d-950983c981ef",
+      "name": "Extrair setlist",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3264,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "playlist",
+        "operation": "create",
+        "title": "={{ [$json.artist, $json.venue, $json.date].filter(Boolean).join(' - ') }}",
+        "options": {
+          "description": "={{ [$json.url, $json.tour].filter(Boolean).join('\\n') }}",
+          "privacyStatus": "={{ $('Webhook').item.json.body.privacy || 'private' }}"
+        }
+      },
+      "id": "5ed381fc-f104-47c6-88a8-650c148e9c02",
+      "name": "Criar playlist",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        3488,
+        16
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "7k4MGBZByoDAZRmO",
+          "name": "YouTube account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Uma linha por faixa, ja com o id da playlist.\nconst playlist = $('Criar playlist').first().json;\nconst meta = $('Extrair setlist').first().json;\n\nreturn meta.songs.map((s) => ({\n  json: {\n    ...s,\n    playlistId: playlist.id,\n    metaArtist: meta.artist,\n    metaVenue: meta.venue,\n    metaDate: meta.date,\n    metaUrl: meta.url,\n  },\n}));"
+      },
+      "id": "e5925daa-1ab8-4087-8722-5faba0421953",
+      "name": "Preparar faixas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3712,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "snippet"
+            },
+            {
+              "name": "type",
+              "value": "video"
+            },
+            {
+              "name": "maxResults",
+              "value": "10"
+            },
+            {
+              "name": "relevanceLanguage",
+              "value": "en"
+            },
+            {
+              "name": "q",
+              "value": "={{ $json.query }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "80af26df-26e1-4baa-9e50-945e763dd894",
+      "name": "Buscar video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3920,
+        16
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "7k4MGBZByoDAZRmO",
+          "name": "YouTube account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Escolhe o melhor video da busca. A busca e feita uma vez por faixa,\n// entao a ordem dos resultados bate com a ordem das faixas.\n// Regra: descarta o que tem 'live' no titulo e, entre o resto, prefere o video\n// que mais combina com o nome da musica e o canal do artista.\nconst norm = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();\nconst semVogal = (s) => norm(s).replace(/[aeiou]/g, '');\n\n// A grafia nem sempre bate: o setlist.fm chama de 'Elunor', o YouTube de 'Eleanor'.\n// Comparar sem vogais resolve: 'lnr' == 'lnr'.\nfunction pareceMusica(titulo, musica) {\n  const t = norm(titulo);\n  const m = norm(musica);\n  if (!m) return false;\n  if (t.includes(m)) return true;\n  const mv = semVogal(musica);\n  return mv.length >= 3 && semVogal(titulo).includes(mv);\n}\n\nconst AO_VIVO = /live|concert|concerto|konzert|ao vivo|en vivo|reuni|cover|covered|remix|unplugged|on stage|festival|tribute/i;\n\nconst faixas = $('Preparar faixas').all();\nconst buscas = $('Buscar video').all();\nconst out = [];\n\nfor (let i = 0; i < buscas.length; i++) {\n  const faixa = faixas[i]?.json ?? {};\n  const items = buscas[i]?.json?.items ?? [];\n\n  if (!items.length) {\n    out.push({ json: { ...faixa, videoId: '', videoTitle: '', videoChannel: '', videoUrl: '' } });\n    continue;\n  }\n\n  const artistN = norm(faixa.artist);\n  // O canal pode vir sem separador: 'TheGatheringband' vs 'The Gathering'.\n  const artistCompacto = artistN.replace(/\\s+/g, '');\n  const contemArtista = (texto) => {\n    const t = norm(texto);\n    if (!artistN) return false;\n    return t.includes(artistN) || t.replace(/\\s+/g, '').includes(artistCompacto);\n  };\n\n  let melhor = null;\n  let melhorScore = -Infinity;\n  let melhorSemLive = null;\n  let melhorSemLiveScore = -Infinity;\n\n  for (const item of items) {\n    const snippet = item.snippet || {};\n    const title = norm(snippet.title);\n    const channel = norm(snippet.channelTitle);\n    const aoVivo = AO_VIVO.test(snippet.title || '');\n\n    let score = 0;\n    if (pareceMusica(snippet.title || '', faixa.song)) score += 3;\n    if (contemArtista(snippet.channelTitle)) score += 3;\n    if (contemArtista(snippet.title)) score += 1;\n    if (aoVivo) score -= 6;\n\n    if (score > melhorScore) {\n      melhorScore = score;\n      melhor = item;\n    }\n    if (!aoVivo && score > melhorSemLiveScore) {\n      melhorSemLiveScore = score;\n      melhorSemLive = item;\n    }\n  }\n\n  // Prefere qualquer video sem 'live' no titulo; so usa a live se nao houver outro.\n  const escolhido = melhorSemLive || melhor;\n  const snippet = escolhido.snippet || {};\n  const videoId = escolhido.id?.videoId ?? '';\n  out.push({\n    json: {\n      ...faixa,\n      videoId,\n      videoTitle: snippet.title || '',\n      videoChannel: snippet.channelTitle || '',\n      videoUrl: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',\n    },\n  });\n}\n\nreturn out;"
+      },
+      "id": "83f346b9-292c-4769-bc88-663678a550e9",
+      "name": "Escolher video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4144,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "playlistItem",
+        "playlistId": "={{ $json.playlistId }}",
+        "videoId": "={{ $json.videoId }}",
+        "options": {}
+      },
+      "id": "af6e2ee9-8dfc-4511-8c29-98deb55986a2",
+      "name": "Adicionar a playlist",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        4368,
+        16
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "7k4MGBZByoDAZRmO",
+          "name": "YouTube account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta a resposta final. Os dados das faixas vem do no 'Escolher video',\n// porque o no do YouTube substitui o item de entrada pela resposta da API.\nconst playlist = $('Criar playlist').first().json;\nconst meta = $('Extrair setlist').first().json;\nconst escolhidos = $('Escolher video').all().map((i) => i.json);\n\nconst tracks = [];\nconst missing = [];\nfor (const it of escolhidos) {\n  if (!it.videoId) {\n    missing.push(it.song);\n    continue;\n  }\n  tracks.push({\n    song: it.song,\n    videoUrl: it.videoUrl,\n    videoTitle: it.videoTitle,\n    videoChannel: it.videoChannel || '',\n    videoDuration: it.videoDuration || 0,\n    cover: it.cover,\n  });\n}\n\nreturn [{\n  json: {\n    playlistUrl: `https://www.youtube.com/playlist?list=${playlist.id}`,\n    title: playlist.snippet?.title ?? '',\n    artist: meta.artist,\n    venue: meta.venue,\n    date: meta.date,\n    tracks,\n    missing,\n  },\n}];"
+      },
+      "id": "c3f3fa12-d719-4bfd-94f2-f5d37fdecaa1",
+      "name": "Montar resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4592,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "8b845dff-8c92-45fe-8aa2-2eb4522049f2",
+      "name": "Responder",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4800,
+        16
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Buscar setlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar setlist": {
+      "main": [
+        [
+          {
+            "node": "Extrair setlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair setlist": {
+      "main": [
+        [
+          {
+            "node": "Criar playlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criar playlist": {
+      "main": [
+        [
+          {
+            "node": "Preparar faixas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar faixas": {
+      "main": [
+        [
+          {
+            "node": "Buscar video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar video": {
+      "main": [
+        [
+          {
+            "node": "Escolher video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escolher video": {
+      "main": [
+        [
+          {
+            "node": "Adicionar a playlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Adicionar a playlist": {
+      "main": [
+        [
+          {
+            "node": "Montar resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar resposta": {
+      "main": [
+        [
+          {
+            "node": "Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "21b34208-31c5-41c6-8116-b846542bc1e2",
+  "meta": {
+    "instanceId": "6184157224308eaa474cb89f4585c6aabdc9593a025ca2e2f21342e16cb544df"
+  },
+  "nodeGroups": [],
+  "id": "jR3FgeUZwoJ0cL5E",
+  "tags": []
+}
