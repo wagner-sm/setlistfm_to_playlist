@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Setlist → Playlist do YouTube</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #181b22;
+        --panel-2: #1f232c;
+        --line: #2a2f3a;
+        --text: #e8eaf0;
+        --muted: #99a0b0;
+        --accent: #ff3b30;
+        --accent-2: #ff6a60;
+        --ok: #3ddc84;
+        --radius: 12px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(1200px 600px at 50% -220px, #232838 0%, var(--bg) 60%);
+        color: var(--text);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        justify-content: center;
+        padding: 60px 20px;
+      }
+      main { width: 100%; max-width: 620px; }
+      h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.02em; }
+      .sub { color: var(--muted); margin: 0 0 26px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 22px;
+      }
+      input, button {
+        font: inherit;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 11px 13px;
+      }
+      input { width: 100%; }
+      input:focus-visible, button:focus-visible {
+        outline: 2px solid var(--accent-2);
+        outline-offset: 1px;
+      }
+      input:focus { border-color: var(--accent-2); }
+      button {
+        cursor: pointer;
+        border: none;
+        font-weight: 600;
+        background: var(--accent);
+        color: #fff;
+        padding: 11px 20px;
+        width: 100%;
+        margin-top: 12px;
+      }
+      button:hover:not(:disabled) { background: var(--accent-2); }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 18px;
+        font-size: 14px;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        flex: none;
+        border: 2px solid rgba(255, 255, 255, 0.15);
+        border-top-color: var(--accent-2);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .ok { color: var(--ok); font-weight: 600; }
+      .ok a { color: var(--ok); }
+      .err { color: #ffb3ae; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Setlist → Playlist do YouTube</h1>
+      <p class="sub">Cole o link do setlist. O n8n cria a playlist e devolve o link.</p>
+
+      <form class="card" id="form">
+        <input
+          id="url"
+          type="url"
+          required
+          placeholder="https://www.setlist.fm/setlist/the-gathering/2026/audio-sao-paulo-brazil-7340de45.html"
+        />
+        <button type="submit" id="submit">Criar playlist</button>
+
+        <div class="status hidden" id="loading">
+          <span class="spinner"></span>
+          <span>Criando a playlist no n8n…</span>
+        </div>
+
+        <div class="status hidden" id="done">
+          <span>✓</span>
+          <span class="ok" id="done-text"></span>
+        </div>
+
+        <div class="status hidden" id="fail">
+          <span>✗</span>
+          <span class="err" id="fail-text"></span>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      // ===== Ajuste aqui =====
+      const WEBHOOK_N8N = '/.netlify/functions/criar-playlist';
+      const PRIVACIDADE = 'private'; // private | unlisted | public
+      // =======================
+
+      const $ = (id) => document.getElementById(id);
+      const show = (id, visible) => $(id).classList.toggle('hidden', !visible);
+
+      // Só aceita link de setlist.fm que comece com https://www.setlist.fm
+      // O id vem no final da URL (.../<id>.html) e é hex com tamanho variável (7, 8...).
+      const SETLIST_RE = /^https:\/\/www\.setlist\.fm\/setlist\/[^/?#]+\/\d{4}\/[^/?#]+-([0-9a-f]{4,})\.html(?:[?#].*)?$/i;
+
+      $('form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        show('loading', false);
+        show('done', false);
+        show('fail', false);
+
+        const url = $('url').value.trim();
+        const id = SETLIST_RE.exec(url);
+        if (!id) {
+          show('fail', true);
+          $('fail-text').textContent =
+          'URL inválida. Precisa começar com https://www.setlist.fm/setlist/... e terminar em -<id>.html';
+          return;
+        }
+
+        $('submit').disabled = true;
+        show('loading', true);
+
+        try {
+          const res = await fetch(WEBHOOK_N8N, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url,
+              setlistId: id[1],
+              privacy: PRIVACIDADE,
+              source: 'setlist-to-youtube',
+            }),
+          });
+
+          const text = await res.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {
+            data = null;
+          }
+
+          if (!res.ok) throw new Error(data?.error || `O n8n respondeu HTTP ${res.status}.`);
+          if (data?.error) throw new Error(data.error);
+
+          show('loading', false);
+          show('done', true);
+          $('done-text').innerHTML = data?.playlistUrl
+            ? `Concluído — <a href="${data.playlistUrl}" target="_blank" rel="noreferrer">abrir a playlist</a>`
+            : 'Concluído.';
+        } catch (err) {
+          show('loading', false);
+          show('fail', true);
+          $('fail-text').textContent =
+            err instanceof TypeError
+              ? 'Não deu para falar com o n8n. Confira a URL do webhook e as permissões CORS.'
+              : err.message;
+        } finally {
+          $('submit').disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
